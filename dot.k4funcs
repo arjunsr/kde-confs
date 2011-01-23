@@ -1,0 +1,365 @@
+# kate: hl bash
+ 
+# Set EDITOR for subversion
+### Optional
+export EDITOR=vim
+ 
+# Nicer man/git paging
+export LESS=-F
+ 
+# Prettier debug
+export KDE_COLOR_DEBUG=1
+export QTEST_COLORED=1
+ 
+##
+# Site configuration
+# This is for stuff that might differ between machines. It should define:
+# - core_packages, extra_packages (variables)
+# - ps_src, ps_bld (variables)
+# - cmake_extra (array variable)
+# - configure_result, make_result (functions)
+. ~/.siteconfig
+ 
+##
+# IMPORTANT!  Uncomment the following lines if DBus does not work. DBus is not
+# working if, when you run `dbus-uuidgen --ensure && qdbus`, you get an error.
+#
+# alias dbusstart="eval `PATH=$DBUSDIR/bin \
+#  $DBUSDIR/bin/dbus-launch --auto-syntax`"
+ 
+##
+# A function to easily change to the build directory.
+# Usage: cb kdebase
+#   will change to $KDE_BUILD/kdebase
+# Usage: cb
+#   will simply go to the build folder if you are currently in a src folder
+#   Example:
+#     $ pwd
+#     /home/user/src/kdebase
+#     $ cb && pwd
+#     /home/user/build/kdebase
+#
+function cb {
+    # command line argument
+    if [ -n "$1" ]; then
+        cd $KDE_BUILD/$1
+        return
+    fi
+    # substitue src dir with build dir
+    dest=`pwd | sed -e s,$KDE_SRC,$KDE_BUILD,`
+    if [ ! -d $dest ]; then
+        # build directory does not exist, create
+        mkdir -p $dest
+    fi
+    cd $dest
+}
+ 
+##
+# Change to the source directory.  Same as cb, except this
+# switches to $KDE_SRC instead of $KDE_BUILD.
+# Usage: cs kdebase
+#    will change to $KDE_SRC/kdebase
+# Usage: cs
+#   will simply go to the source folder if you are currently in a build folder
+#   Example:
+#     $ pwd
+#     /home/user/build/kdebase
+#     $ cs && pwd
+#     /home/user/src/kdebase
+#
+function cs {
+    # command line argument
+    if [ -n "$1" ]; then
+        cd $KDE_SRC/$1
+    else
+        # substitue build dir with src dir
+        dest=`pwd | sed -e s,$KDE_BUILD,$KDE_SRC,`
+        if [ $dest = `pwd` ]; then
+            cd $KDE_SRC
+        else
+            cd $dest
+        fi
+    fi
+}
+ 
+function completecs {
+    COMPREPLY=( $(cd $KDE_SRC; compgen -d "$2") )
+}
+complete -o nospace -F completecs cs
+ 
+function shortpath {
+    case "$1" in
+        $KDE_SRC*) echo -ne "$ps_src"; echo "${1:${#KDE_SRC}}";;
+        $KDE_BUILD*) echo -ne "$ps_bld"; echo "${1:${#KDE_BUILD}}";;
+        *) echo "$1";;
+    esac
+}
+ 
+##
+# A function to easily configure the current directory of KDE, from scratch.
+#
+# This configures only the sources in the current src/build subdirectory, but
+# first it nukes the build directory.
+# Usage: cs kdebase && cmakekdeclean
+#   will configure the sources in ${KDE_SRC}/kdebase
+#
+function cmakekdeclean() (
+    [ "`pwd | grep $KDE_SRC`" = "" ] && cs "$@"
+    srcFolder=`pwd`
+    cb
+    buildFolder=`pwd`
+    [ ${#KDE_BUILD} -gt 0 ] \
+    && [ "${buildFolder:0:${#KDE_BUILD}}" = "$KDE_BUILD" ] \
+    && rm -rf "$buildFolder"/*
+    cmake -DCMAKE_INSTALL_PREFIX=$KDEDIR \
+          -DKDE4_BUILD_TESTS=TRUE \
+          "${cmake_extra[@]}" \
+          $srcFolder
+    configure_result $?; return $?
+)
+ 
+##
+# A function to easily configure the current directory of KDE.
+#
+# This configures only the sources in the current src/build subdirectory.
+# Usage: cs KDE/kdebase && cmakekde
+#   will configure the sources in ${KDE_SRC}/kdebase
+#
+function cmakekde() (
+    [ "`pwd | grep $KDE_SRC`" = "" ] && cs "$@"
+    srcFolder=`pwd`
+    cb
+    cmake -DCMAKE_INSTALL_PREFIX=$KDEDIR \
+          -DKDE4_BUILD_TESTS=TRUE \
+          "${cmake_extra[@]}" \
+          $srcFolder
+    configure_result $?; return $?
+)
+ 
+function installfilter {
+    local l
+    while read l ; do
+        if [ -n "$COLUMNS" ] && (( ${#l} > $COLUMNS )) ; then
+            l="`echo "$l" | cut -c $((COLUMNS - 4))`..."
+        fi
+        if [ "${l:0:15}" = "-- Installing: " ] \
+        || [ "${l:0:15}" = "-- Up-to-date: " ] \
+        || [ "${l:0:23}" = "-- Set runtime path of " ]
+        then
+            echo -ne "$l"'\e[K\e[0G'
+        else
+            echo -e "$l"'\e[K'
+        fi
+    done
+    echo -ne '\e[K'
+}
+ 
+##
+# A function to easily build the current directory of KDE.
+#
+# This builds only the sources in the current src/build subdirectory.
+# Usage: cs KDE/kdebase && cmakekde
+#   will build/rebuild the sources in ${KDE_SRC}/kdebase
+#
+function makekde() (
+    export LC_ALL=C
+    cb "$@"
+    cat <<- EOF
+ 
+    = Building ${PWD:$(( ${#KDE_BUILD} + 1 ))}
+    ============================================================
+    EOF
+    echo -e '\e]0;[k4] building '"${PWD:$(( ${#KDE_BUILD} + 1 ))}"'...\a'
+    time make -j4 || { make_result $?; return $?; }
+    echo -e '\e]0;[k4] installing '"${PWD:$(( ${#KDE_BUILD} + 1 ))}"'...\a'
+    time make install/fast | installfilter
+    make_result ${PIPESTATUS[0]}; return $?
+)
+ 
+function makekdemulti {
+    local extra
+    local result
+    if [ "${1:0:2}" = "--" ] ; then
+        case "$1" in
+            --config) extra=cmakekde;;
+            --clean) extra=cmakekdeclean;
+        esac
+        shift 1
+    fi
+    for t in "$@" ; do
+        (
+            cd $KDE_SRC/"$t"
+            if [ -n "$extra" ] ; then $extra || exit $? ; fi
+            makekde
+        )
+        result=$?
+        if [ $result -ne 0 ] ; then
+            echo "Error(s) while building $t"
+            return $result
+        fi
+    done
+}
+ 
+function configureqt() (
+    [ "`pwd | grep $KDE_SRC`" = "" ] && cs "$@"
+    srcFolder=`pwd`
+    cb
+    $srcFolder/configure -nomake examples -nomake demos \
+                         -qt-gif -webkit -dbus -no-phonon -xinerama -plugin-sql-mysql \
+                         -system-libpng -system-libjpeg -system-zlib \
+                         -debug -fast -no-separate-debug-info -no-exceptions \
+                         -prefix $QTDIR -confirm-license -opensource "$@"
+    configure_result $?; return $?
+)
+ 
+function makeqt() (
+    export LC_ALL=C
+    cb "$@"
+    cat <<- EOF
+ 
+    = Building ${PWD:$(( ${#KDE_BUILD} + 1 ))}
+    ============================================================
+    EOF
+    echo -e '\e]0;[k4] building '"${PWD:$(( ${#KDE_BUILD} + 1 ))}"'...\a'
+    time make -j4 || { make_result $?; return $?; }
+    time make install
+    make_result $?; return $?
+)
+ 
+function testkde() (
+    cb
+    ctest "$@"
+)
+ 
+function co {
+    if [ -n "$1" ]; then
+        cd $KDE_SRC
+        ### Replace with your user name, or the appropriate https or anonsvn
+        ### prefix if not using svn
+        svn co svn+ssh://user@svn.kde.org/home/kde/trunk/KDE/$1
+        cd $1
+    else
+        echo "Check out what?"
+        return 1
+    fi
+}
+ 
+function svn_upfilter {
+    local _u=0 _a=0 _d=0 _g=0 _c=0 out l result=0
+    while read l ; do
+        if [ "${l:1:1}" = " " ] ; then
+            case "${l:0:1}" in
+                U) (( _u++ ));;
+                A) (( _a++ ));;
+                D) (( _d++ ));;
+                G) (( _g++ )); echo -e "  \e[1;32m$l\e[0m";;
+                C) (( _c++ )); echo -e "  \e[1;31m$l\e[0m";;
+                *) echo "  $l";;
+            esac
+        elif [ "${l:0:1}" = "`printf '\e'`" ] ; then
+            echo "$l"
+        elif [ -n "`echo $l`" ] ; then
+            if [ -n "$out" ] ; then
+                out="$out`printf '\n  '`$l"
+            else
+                out="  $l"
+            fi
+        fi
+    done
+    [ $_u -gt 0 ] && echo    "  Updated:   $_u"
+    [ $_a -gt 0 ] && echo    "  Added:     $_a"
+    [ $_d -gt 0 ] && echo    "  Removed:   $_d"
+    [ $_g -gt 0 ] && echo -e "  Merged:    \e[1;32m$_g\e[0m"
+    [ $_c -gt 0 ] && echo -e "  Conflicts: \e[1;31m$_c\e[0m" && result=2
+    echo "$out"
+    return $result
+}
+ 
+function git_svn_upfilter {
+    local _m=0 _a=0 _d=0 _r=0 _c=0 _revs=0 out l
+    while read l ; do
+        if [ "${l:1:1}" = "    " ] ; then
+            case "${l:0:1}" in
+                M) (( _m++ ));;
+                A) (( _a++ ));;
+                D) (( _d++ ));;
+                R) (( _r++ ));;
+                C) (( _c++ ));;
+                *) echo "  $l";;
+            esac
+        elif [[ "$l" =~ '^r.*(git-svn)' ]] ; then
+            (( _revs++ ))
+        elif [ "$l" = "First, rewinding head to replay your work on top of it..." ] ; then :
+        elif [ -n "`echo $l`" ] ; then
+            if [ -n "$out" ] ; then
+                out="$out`printf '\n  '`$l"
+            else
+                out="  $l"
+            fi
+        fi
+    done
+    [ $_m -gt 0 ] && echo "  Modified:  $_m"
+    [ $_a -gt 0 ] && echo "  Added:     $_a"
+    [ $_c -gt 0 ] && echo "  Copied:    $_c"
+    [ $_r -gt 0 ] && echo "  Renamed:   $_r"
+    [ $_d -gt 0 ] && echo "  Removed:   $_d"
+    [ $_revs -gt 0 ] && echo "  $_revs change(s)"
+    echo "$out"
+}
+ 
+function git_up {
+    local branch=`git branch | sed -n 's/^[*]\s\+//p'`
+    if [ "$branch" != "master" ] ; then
+        git checkout master || return $?
+    fi
+    git "$@" || return $?
+    if [ "$branch" != "master" ] ; then
+        git rebase master $branch || return $?
+    fi
+}
+ 
+function up() (
+    result=0
+    echo -e '\e]0;[k4] updating...\a'
+    cd $KDE_SRC
+    [ -z "$*" ] && set -- *
+    for d in "$@" ; do if [ -d $d ] ; then
+        echo -e "\e[1m$d\e[0m"
+        if [ -e "$d/.no-update" ] ; then
+            echo "  Directory $d is marked no-update; skipping"
+        elif [ -d "$d/.svn" ] ; then
+            ( cd $d && svn up --accept postpone ) | svn_upfilter
+        elif [ -d "$d/.git" ] ; then
+            if [ -d "$d/.git/svn" ] ; then
+                ( cd $d && git_up svn rebase 2>&1 ) | git_svn_upfilter
+                echo "  Last svn revision: $(cd $d && git svn info | grep 'Last Changed Rev' | sed 's/.*: //')"
+            else
+                ( cd $d && git_up pull --rebase 2>&1 ) | sed 's/^/  /'
+            fi
+        elif [ -d "$d/.hg" ] ; then
+            ( cd $d && hg pull &>/dev/null && hg update ) | sed 's/^/  /'
+        else
+            echo "  Directory $d doesn't seem to be using any of svn, hg or git; skipping"
+        fi
+        for r in ${PIPESTATUS[@]} ; do [ $r -eq 0 ] || result=$r ; done
+    fi ; done
+    exit $result
+)
+complete -W "$(cd $KDE_SRC && find . -maxdepth 1 -type d \! -name '.*' | sed 's,[.]/,,')" up kmm makekdemulti
+ 
+export cmakekde makekde makekdemulti co up git_up svn_upfilter git_svn_upfilter
+ 
+alias kc='cmakekde'
+alias kcc='cmakekdeclean'
+alias km='makekde'
+alias kmv='VERBOSE=1 makekde'
+alias kmm='makekdemulti'
+alias kma="makekdemulti $core_packages"
+alias kcma="makekdemulti --config $core_packages"
+alias kccma="makekdemulti --clean $core_packages"
+alias kmra="makekdemulti $core_packages $extra_packages"
+alias kcmra="makekdemulti --config $core_packages $extra_packages"
+alias kccmra="makekdemulti --clean $core_packages $extra_packages"
+alias kt='testkde'
+alias qc='configureqt'
+alias qm='makeqt'

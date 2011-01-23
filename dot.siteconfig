@@ -1,0 +1,47 @@
+# kate: hl bash
+ 
+# Prompt
+ps_src='\e[1;34m[source]\e[1;36m'
+ps_bld='\e[1;35m[build]\e[1;36m'
+ 
+### If konsole is set to use '%w' for tab titles, this is what your tab title
+### will be; mostly it is to reset the tab title after parts of .k4funcs change
+### it to show your build status
+export TAB_TITLE="[kde] \$(basename \"\$PWD\")"
+# Use substitution on local PS1; we likes the shiny
+### Change to taste; the 'shortpath' bit will abbreviate your source and build
+### directories (see .k4funcs, below)
+export PS1="\[\e]0;\$(eval echo \$TAB_TITLE)\a\]\[\e[1;31m\]\t \[\e[33m\]\u@\h \[\e[36m\]\$(shortpath \"\w\")\[\e[0m\e[K\]\n\[\e[1;36m\]\W\[\e[1;37m\]\\$\[\e[0m\] "
+ 
+# Status functions
+function configure_result {
+    ### This is run when 'cmakekde' completes, with the result in $1.
+    ### You can add notifications here, e.g. you might play a sound.
+    return $1
+}
+ 
+function make_result {
+    ### This is run when 'makekde' completes, with the result in $1.
+    ### You can add notifications here, e.g. you might play a sound.
+    [ $1 -eq 0 ] && echo SUCCESS
+    return $1
+}
+ 
+# Extra arguments to cmake
+cmake_extra=
+### Add anything you need as array elements. For example:
+### cmake_extra[0]=-DLIB_SUFFIX=64
+### cmake_extra[1]=-DCMAKE_BUILD_TYPE=debugfull
+ 
+# What to build
+### This assumes you have checked out e.g. kdesupport as
+### $KDE_SRC/kdesupport; likewise for kdelibs, etc. Change as needed.
+###
+### This specifies what packages are considered when building
+### "just the core". For example, you may want to add 'eigen2', 'wv2' and/or
+### 'libssh', or remove kdesupport.
+core_packages="kdesupport kdelibs kdepimlibs kdebase"
+###
+### This specifies what packages are considered when building "everything"
+### (kmra and friends).
+extra_packages="kdeutils kdegraphics kdegames kdepim kdenetwork kdesdk kdevplatform kdevelop kdemultimedia kdeartwork kdeaccessibility koffice kdeplasma-addons"
